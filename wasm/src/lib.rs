@@ -5,9 +5,9 @@
 ////////////////////////////////////////////////////
 
 // Init:                                 1
-// Endpoints:                            8
+// Endpoints:                           11
 // Async Callback:                       1
-// Total number of exported functions:  10
+// Total number of exported functions:  13
 
 #![no_std]
 #![feature(alloc_error_handler, lang_items)]
@@ -18,14 +18,17 @@ multiversx_sc_wasm_adapter::panic_handler!();
 multiversx_sc_wasm_adapter::endpoints! {
     usd_price_token_sale
     (
-        buyTokens
+        buy
         setProxyAddress
         setPackagePrice
-        addPackageContent
-        removePackageContent
-        getProxyAddress
+        setPackageContent
+        removePackage
+        deposit
+        withdraw
+        getUsdcTokenIdentifier
         getUsdcPrice
         getPackageContent
+        getProxyAddress
         callBack
     )
 }

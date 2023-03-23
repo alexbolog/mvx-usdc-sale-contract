@@ -2,9 +2,6 @@
 
 multiversx_sc::imports!();
 
-const USDC_TOKEN_ID: &[u8] = b"USDC-c76f1f";
-const WEGLD_TOKEN_ID: &[u8] = b"WEGLD-bd4d79";
-
 /// A simple smart contract allowing the owner to create a package-style sale
 /// specifying the USDC price of each given package, with support for any
 /// token listed on xExchange (or similar DEX that implements `getEquivalent`
@@ -12,27 +9,32 @@ const WEGLD_TOKEN_ID: &[u8] = b"WEGLD-bd4d79";
 #[multiversx_sc::contract]
 pub trait UsdPriceTokenSaleContract {
     #[init]
-    fn init(&self) {}
+    fn init(&self, opt_usdc_token_id: OptionalValue<TokenIdentifier>) {
+        match opt_usdc_token_id {
+            OptionalValue::Some(usdc_token_id) => {
+                self.usdc_token_id().set(&usdc_token_id);
+            },
+            OptionalValue::None => {}
+        };
+
+        require!(!self.usdc_token_id().is_empty(), "USDC token id not specified");
+    }
 
     #[payable("*")]
-    #[endpoint(buyTokens)]
+    #[endpoint(buy)]
     fn buy_tokens(&self, package_id: u8) {
         
         self.validate_package_purchase(package_id);
 
         let payment = self.call_value().egld_or_single_esdt();
-        let exchange_pool_proxy_address = self.proxy_address(&payment.token_identifier);
-        require!(!exchange_pool_proxy_address.is_empty(), "payment currency not supported");
+        let exchange_pool_proxy_address = self.get_proxy_address_or_fail(&payment.token_identifier);
 
-        let output_token_id = match payment.token_identifier.is_egld() {
-            true => TokenIdentifier::from(ManagedBuffer::from(WEGLD_TOKEN_ID)),
-            false => payment.token_identifier.clone().unwrap_esdt()
-        };
+        let usdc_token_id = self.usdc_token_id().get();
 
         let package_cost = self.package_prices(package_id).get();
 
-        self.contract_proxy(exchange_pool_proxy_address.get())
-            .get_equivalent(output_token_id, package_cost)
+        self.contract_proxy(exchange_pool_proxy_address)
+            .get_equivalent(usdc_token_id, package_cost)
             .async_call()
             .with_callback(
                 self.callbacks()
@@ -92,10 +94,8 @@ pub trait UsdPriceTokenSaleContract {
     }
 
     fn send_package_content(&self, package_id: u8, receiver: &ManagedAddress) {
-        let mut out_vec = ManagedVec::new();
-        for item in self.package_content(package_id).iter() {
-            out_vec.push(item);
-        }
+        let package_content = self.package_content(package_id).get();
+        let out_vec = ManagedVec::from_single_item(package_content);
         self.send()
             .direct_multi(receiver, &out_vec);
     }
@@ -113,17 +113,10 @@ pub trait UsdPriceTokenSaleContract {
     }
 
     #[only_owner]
-    #[endpoint(addPackageContent)]
+    #[endpoint(setPackageContent)]
     fn add_package_content(&self, package_id: u8, token_id: TokenIdentifier, nonce: u64, amount: BigUint) {
         let content = EsdtTokenPayment::new(token_id, nonce, amount);
-        require!(self.package_content(package_id).insert(content), "package content already set");
-    }
-
-    #[only_owner]
-    #[endpoint(removePackageContent)]
-    fn remove_package_content(&self, package_id: u8, token_id: TokenIdentifier, nonce: u64, amount: BigUint) {
-        let content = EsdtTokenPayment::new(token_id, nonce, amount);
-        self.package_content(package_id).remove(&content);
+        self.package_content(package_id).set(&content);
     }
 
     #[only_owner]
@@ -138,10 +131,43 @@ pub trait UsdPriceTokenSaleContract {
     #[endpoint]
     fn deposit(&self) {}
 
+    #[only_owner]
+    #[endpoint]
+    fn withdraw(&self, token_id: EgldOrEsdtTokenIdentifier, nonce: u64, opt_receiver: OptionalValue<ManagedAddress>) {
+        let receiver = match opt_receiver {
+            OptionalValue::Some(val) => val,
+            OptionalValue::None => self.blockchain().get_caller()
+        };
+        let balance = self.blockchain().get_sc_balance(&token_id, nonce);
+        require!(&balance >= &BigUint::zero(), "nothing to withdraw");
+
+        self.send()
+            .direct(
+                &receiver,
+                &token_id,
+                nonce,
+                &balance
+            );
+    }
+
+    fn get_proxy_address_or_fail(&self, token_id: &EgldOrEsdtTokenIdentifier) -> ManagedAddress {
+        let proxy_address_storage = self.proxy_address(token_id);
+        require!(!proxy_address_storage.is_empty(), "payment token not supported");
+        return proxy_address_storage.get();
+    }
+
     fn validate_package_purchase(&self, package_id: u8) {
         require!(!self.package_prices(package_id).is_empty(), "package price not set");
-        require!(!self.package_content(package_id).is_empty(), "package content not set");
+        let package_content_storage = self.package_content(package_id);
+        require!(!package_content_storage.is_empty(), "package content not set");
+        let package_content = package_content_storage.get();
+        let sc_balance = self.blockchain().get_sc_balance(&EgldOrEsdtTokenIdentifier::esdt(package_content.token_identifier), package_content.token_nonce);
+        require!(&sc_balance >= &package_content.amount, "not enough package content balance on the smart contract");
     }
+
+    #[view(getUsdcTokenIdentifier)]
+    #[storage_mapper("usdc_token_id")]
+    fn usdc_token_id(&self) -> SingleValueMapper<TokenIdentifier>;
 
     #[view(getUsdcPrice)]
     #[storage_mapper("usdc_costs")]
@@ -149,7 +175,7 @@ pub trait UsdPriceTokenSaleContract {
 
     #[view(getPackageContent)]
     #[storage_mapper("package_content")]
-    fn package_content(&self, package_id: u8) -> SetMapper<EsdtTokenPayment>;
+    fn package_content(&self, package_id: u8) -> SingleValueMapper<EsdtTokenPayment>;
 
     #[view(getProxyAddress)]
     #[storage_mapper("proxy_address")]
