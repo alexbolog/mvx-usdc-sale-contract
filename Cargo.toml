@@ -1,7 +1,7 @@
 [package]
 name = "usd-price-token-sale"
-version = "0.0.0"
-authors = [ "you",]
+version = "0.1.0"
+authors = [ "mbolog.alex@gmail.com",]
 edition = "2018"
 publish = false
 
