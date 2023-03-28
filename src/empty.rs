@@ -25,34 +25,50 @@ pub trait UsdPriceTokenSaleContract {
     fn buy_tokens(&self, package_id: u8) {        
         self.validate_package_purchase(package_id);
         let caller = self.blockchain().get_caller();
-
         let payment = self.call_value().egld_or_single_esdt();
-        let exchange_pool_proxy_address = self.get_proxy_address_or_fail(&payment.token_identifier);
-
         let usdc_token_id = self.usdc_token_id().get();
-        let package_cost = self.package_prices(package_id).get();
 
+        let package_cost = self.package_prices(package_id).get();
 
         if &payment.token_identifier == &usdc_token_id {
             require!(&payment.amount == &package_cost, "invalid payment amount");
             self.send_package_content(package_id, &caller);
         } else {
-            self.contract_proxy(exchange_pool_proxy_address)
-                .get_equivalent(usdc_token_id, package_cost)
-                .async_call()
-                .with_callback(
-                    self.callbacks()
-                        .finish_transfer(
-                            package_id,
-                            &caller,
-                            &payment.token_identifier,
-                            payment.token_nonce,
-                            &payment.amount
-                        )
-                )
-                .call_and_exit();
+            self.process_non_usdc_payment(
+                package_id,
+                &caller,
+                usdc_token_id,
+                package_cost,
+                &payment
+            );
         }
-        
+    }
+
+    fn process_non_usdc_payment(
+        &self,
+        package_id: u8,
+        caller: &ManagedAddress,
+        usdc_token_id: TokenIdentifier,
+        package_cost: BigUint,
+        incoming_payment: &EgldOrEsdtTokenPayment
+    ) {
+        let exchange_pool_proxy_address = 
+            self.get_proxy_address_or_fail(&incoming_payment.token_identifier);
+
+        self.contract_proxy(exchange_pool_proxy_address)
+            .get_equivalent(usdc_token_id, package_cost)
+            .async_call()
+            .with_callback(
+                self.callbacks()
+                    .finish_transfer(
+                        package_id,
+                        &caller,
+                        &incoming_payment.token_identifier,
+                        incoming_payment.token_nonce,
+                        &incoming_payment.amount
+                    )
+            )
+            .call_and_exit();
     }
 
     #[callback]
